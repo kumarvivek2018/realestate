@@ -56,6 +56,19 @@ _AREAS = [
     ("dubai_hills",             "Dubai Hills Estate",            "dubai-hills-estate"),
     ("arjan",                   "Arjan",                         "arjan"),
     ("business_bay",            "Business Bay",                  "business-bay"),
+    # round 2: high-volume areas DLD shows transactions in but were missing
+    ("motor_city",              "Motor City",                    "motor-city"),
+    ("majan",                   "Majan",                         "majan"),
+    ("meydan_one",              "Meydan One",                    "meydan-one"),
+    ("liwan",                   "Liwan",                         "liwan"),
+    ("damac_hills",             "DAMAC Hills",                   "damac-hills"),
+    ("dubai_studio_city",       "Dubai Studio City",             "dubai-studio-city"),
+    ("international_city",      "International City",            "international-city"),
+    ("dubai_creek_harbour",     "Dubai Creek Harbour",           "dubai-creek-harbour-the-lagoons"),
+    ("dubai_science_park",      "Dubai Science Park",            "dubai-science-park"),
+    ("dubai_land_residence",    "Dubai Land Residence Complex",  "dubai-land-residence-complex"),
+    ("palm_jumeirah",           "Palm Jumeirah",                 "palm-jumeirah"),
+    ("downtown",                "Downtown Dubai",                "downtown-dubai"),
 ]
 
 _BUY_TPL = "https://www.propertyfinder.ae/en/buy/dubai/{config}-apartments-for-sale-{slug}.html"
