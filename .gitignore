@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Data (large files — never commit)
+data/raw/
+data/processed/
+data/interim/
+*.csv
+*.parquet
+*.duckdb
+!data/.gitkeep
+
+# Notebook scratch
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
