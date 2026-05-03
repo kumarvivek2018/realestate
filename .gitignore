@@ -4,14 +4,11 @@ __pycache__/
 .venv/
 *.egg-info/
 
-# Data (large files — never commit)
-data/raw/
-data/processed/
-data/interim/
-*.csv
-*.parquet
-*.duckdb
-!data/.gitkeep
+# Data — by default we DO commit data so re-fetching isn't needed.
+# Block only the noisy/big/redundant files.
+data/raw/pf_listings_*.jsonl    # redundant: same data is in the .parquet
+data/raw/_*                     # debug screenshots, captured creds, samples
+data/raw/*.png
 
 # Notebook scratch
 .ipynb_checkpoints/

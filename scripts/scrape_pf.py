@@ -43,7 +43,7 @@ OUT = Path(__file__).resolve().parent.parent / "data" / "raw"
 _AREAS = [
     ("marina",                  "Dubai Marina",                 "dubai-marina"),
     ("jlt",                     "Jumeirah Lake Towers",          "jumeirah-lake-towers"),
-    ("jvc",                     "Jumeirah Village Circle",       "jumeirah-village-circle-jvc"),
+    ("jvc",                     "Jumeirah Village Circle",       "jumeirah-village-circle"),
     ("jvt",                     "Jumeirah Village Triangle",     "jumeirah-village-triangle"),
     ("al_furjan",               "Al Furjan",                     "al-furjan"),
     ("town_square",             "Town Square",                   "town-square"),
