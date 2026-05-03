@@ -98,6 +98,34 @@ def location_part(location: dict, depth: int) -> str | None:
     return parts[depth] if depth < len(parts) else None
 
 
+def _str_or_none(v):
+    return None if v is None else str(v)
+
+
+def _float_or_none(v):
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bool_or_none(v):
+    if v is None:
+        return None
+    return bool(v)
+
+
+def _int_or_none(v):
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def listing_to_row(listing: dict, intent: str, area: str) -> dict | None:
     if listing.get("listing_type") != "property":
         return None
@@ -112,42 +140,40 @@ def listing_to_row(listing: dict, intent: str, area: str) -> dict | None:
 
     full_name = location.get("full_name") or ""
     parts = [s.strip() for s in full_name.split(",")]
-    # heuristics: parts[0] is the most specific (often building/tower),
-    # parts[-2] is area, parts[-1] is Dubai.
     building = parts[0] if parts else None
 
     return {
         "scope_intent": intent,
         "scope_area": area,
-        "id": p.get("id"),
-        "reference": p.get("reference"),
-        "title": p.get("title"),
-        "offering_type": p.get("offering_type"),
-        "completion_status": p.get("completion_status"),
-        "property_type": p.get("property_type"),
-        "bedrooms": str(p.get("bedrooms")),
-        "bathrooms": p.get("bathrooms"),
-        "size_sqft": size.get("value") if size.get("unit") == "sqft" else None,
-        "size_unit": size.get("unit"),
-        "price_aed": price.get("value"),
-        "price_period": price.get("period"),
-        "price_per_sqft": p.get("price_per_area"),
-        "furnished": p.get("furnished"),
-        "is_verified": p.get("is_verified"),
-        "is_pf_exclusive": p.get("is_pf_exclusive"),
-        "is_smart_ad": p.get("is_smart_ad"),
-        "is_premium": p.get("is_premium"),
-        "is_new_construction": p.get("is_new_construction"),
-        "listed_date": p.get("listed_date"),
-        "last_refreshed_at": p.get("last_refreshed_at"),
-        "permit_number": p.get("rera") if isinstance(p.get("rera"), str) else p.get("permit_number"),
+        "id": _int_or_none(p.get("id")),
+        "reference": _str_or_none(p.get("reference")),
+        "title": _str_or_none(p.get("title")),
+        "offering_type": _str_or_none(p.get("offering_type")),
+        "completion_status": _str_or_none(p.get("completion_status")),
+        "property_type": _str_or_none(p.get("property_type")),
+        "bedrooms": _str_or_none(p.get("bedrooms")),
+        "bathrooms": _str_or_none(p.get("bathrooms")),
+        "size_sqft": _float_or_none(size.get("value")) if size.get("unit") == "sqft" else None,
+        "size_unit": _str_or_none(size.get("unit")),
+        "price_aed": _float_or_none(price.get("value")),
+        "price_period": _str_or_none(price.get("period")),
+        "price_per_sqft": _float_or_none(p.get("price_per_area")),
+        "furnished": _str_or_none(p.get("furnished")),
+        "is_verified": _bool_or_none(p.get("is_verified")),
+        "is_pf_exclusive": _bool_or_none(p.get("is_pf_exclusive")),
+        "is_smart_ad": _bool_or_none(p.get("is_smart_ad")),
+        "is_premium": _bool_or_none(p.get("is_premium")),
+        "is_new_construction": _bool_or_none(p.get("is_new_construction")),
+        "listed_date": _str_or_none(p.get("listed_date")),
+        "last_refreshed_at": _str_or_none(p.get("last_refreshed_at")),
+        "permit_number": _str_or_none(p.get("rera") if isinstance(p.get("rera"), str) else p.get("permit_number")),
         "location_full_name": full_name,
-        "building": building,
-        "lat": (location.get("coordinates") or {}).get("lat"),
-        "lon": (location.get("coordinates") or {}).get("lon"),
-        "broker_name": broker.get("name"),
-        "agent_name": agent.get("name"),
-        "share_url": p.get("share_url"),
+        "building": _str_or_none(building),
+        "lat": _float_or_none((location.get("coordinates") or {}).get("lat")),
+        "lon": _float_or_none((location.get("coordinates") or {}).get("lon")),
+        "broker_name": _str_or_none(broker.get("name")),
+        "agent_name": _str_or_none(agent.get("name")),
+        "share_url": _str_or_none(p.get("share_url")),
         "scraped_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -202,11 +228,22 @@ def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     targets = args.scope or list(SCOPES)
 
+    # Save incrementally per-scope so a crash doesn't lose hours of work.
+    today = date.today().isoformat()
+    incremental_jsonl = OUT / f"pf_listings_{today}.jsonl"
+    incremental_jsonl.unlink(missing_ok=True)
+
     all_rows: list[dict] = []
     with httpx.Client() as client:
         for name in targets:
             try:
-                all_rows.extend(scrape_scope(client, name, SCOPES[name], args.max_pages))
+                rows = scrape_scope(client, name, SCOPES[name], args.max_pages)
+                all_rows.extend(rows)
+                # Append to JSONL after each scope completes
+                with incremental_jsonl.open("a") as fh:
+                    for r in rows:
+                        fh.write(json.dumps(r, default=str) + "\n")
+                print(f"[{name}] +{len(rows)} rows (total: {len(all_rows):,})")
             except httpx.HTTPError as e:
                 print(f"[{name}] FAILED: {type(e).__name__}: {e}", file=sys.stderr)
 
@@ -214,10 +251,13 @@ def main() -> int:
         print("no rows scraped", file=sys.stderr)
         return 1
 
-    df = pl.DataFrame(all_rows)
-    out = OUT / f"pf_listings_{date.today().isoformat()}.parquet"
+    # Build DataFrame from JSONL (more robust than from a list of dicts —
+    # polars handles the schema across heterogeneous nulls better).
+    df = pl.read_ndjson(incremental_jsonl, infer_schema_length=None)
+    out = OUT / f"pf_listings_{today}.parquet"
     df.write_parquet(out, compression="zstd")
     print(f"\nwrote {len(df):,} listings -> {out}")
+    print(f"  (raw JSONL kept at {incremental_jsonl} as a backup)")
 
     # quick summary
     print("\nby (area, intent, bedrooms):")
