@@ -35,40 +35,43 @@ UA = (
 OUT = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 # url-template, intent, area for column tagging
-SCOPES: dict[str, dict] = {
-    "marina_sale_studio": {
-        "url": "https://www.propertyfinder.ae/en/buy/dubai/studio-apartments-for-sale-dubai-marina.html",
-        "intent": "sale", "area": "Dubai Marina",
-    },
-    "marina_sale_1br": {
-        "url": "https://www.propertyfinder.ae/en/buy/dubai/1-bedroom-apartments-for-sale-dubai-marina.html",
-        "intent": "sale", "area": "Dubai Marina",
-    },
-    "marina_rent_studio": {
-        "url": "https://www.propertyfinder.ae/en/rent/dubai/studio-apartments-for-rent-dubai-marina.html",
-        "intent": "rent", "area": "Dubai Marina",
-    },
-    "marina_rent_1br": {
-        "url": "https://www.propertyfinder.ae/en/rent/dubai/1-bedroom-apartments-for-rent-dubai-marina.html",
-        "intent": "rent", "area": "Dubai Marina",
-    },
-    "jlt_sale_studio": {
-        "url": "https://www.propertyfinder.ae/en/buy/dubai/studio-apartments-for-sale-jumeirah-lake-towers.html",
-        "intent": "sale", "area": "Jumeirah Lake Towers",
-    },
-    "jlt_sale_1br": {
-        "url": "https://www.propertyfinder.ae/en/buy/dubai/1-bedroom-apartments-for-sale-jumeirah-lake-towers.html",
-        "intent": "sale", "area": "Jumeirah Lake Towers",
-    },
-    "jlt_rent_studio": {
-        "url": "https://www.propertyfinder.ae/en/rent/dubai/studio-apartments-for-rent-jumeirah-lake-towers.html",
-        "intent": "rent", "area": "Jumeirah Lake Towers",
-    },
-    "jlt_rent_1br": {
-        "url": "https://www.propertyfinder.ae/en/rent/dubai/1-bedroom-apartments-for-rent-jumeirah-lake-towers.html",
-        "intent": "rent", "area": "Jumeirah Lake Towers",
-    },
-}
+# Each PF search URL uses an area-slug. Studio + 1BR both for sale and rent.
+# Areas chosen: existing mature freehold (Marina, JLT) + budget-relevant
+# affordable (JVC, JVT, Al Furjan, Town Square, Discovery Gardens, Sports
+# City, IMPZ, DSO, Damac Hills 2) + southern-thesis (Dubai South, Dubai Hills,
+# Arjan, MBR City). Easy to add more — copy a row.
+_AREAS = [
+    ("marina",                  "Dubai Marina",                 "dubai-marina"),
+    ("jlt",                     "Jumeirah Lake Towers",          "jumeirah-lake-towers"),
+    ("jvc",                     "Jumeirah Village Circle",       "jumeirah-village-circle-jvc"),
+    ("jvt",                     "Jumeirah Village Triangle",     "jumeirah-village-triangle"),
+    ("al_furjan",               "Al Furjan",                     "al-furjan"),
+    ("town_square",             "Town Square",                   "town-square"),
+    ("discovery_gardens",       "Discovery Gardens",             "discovery-gardens"),
+    ("sports_city",             "Dubai Sports City",             "dubai-sports-city"),
+    ("impz",                    "Dubai Production City",         "dubai-production-city-impz"),
+    ("dso",                     "Dubai Silicon Oasis",           "dubai-silicon-oasis"),
+    ("damac_hills_2",           "DAMAC Hills 2",                 "damac-hills-2"),
+    ("dubai_south",             "Dubai South",                   "dubai-south-dubai-world-central"),
+    ("dubai_hills",             "Dubai Hills Estate",            "dubai-hills-estate"),
+    ("arjan",                   "Arjan",                         "arjan"),
+    ("business_bay",            "Business Bay",                  "business-bay"),
+]
+
+_BUY_TPL = "https://www.propertyfinder.ae/en/buy/dubai/{config}-apartments-for-sale-{slug}.html"
+_RENT_TPL = "https://www.propertyfinder.ae/en/rent/dubai/{config}-apartments-for-rent-{slug}.html"
+
+SCOPES: dict[str, dict] = {}
+for short, label, slug in _AREAS:
+    for config_key, config_url in (("studio", "studio"), ("1br", "1-bedroom")):
+        SCOPES[f"{short}_sale_{config_key}"] = {
+            "url": _BUY_TPL.format(config=config_url, slug=slug),
+            "intent": "sale", "area": label,
+        }
+        SCOPES[f"{short}_rent_{config_key}"] = {
+            "url": _RENT_TPL.format(config=config_url, slug=slug),
+            "intent": "rent", "area": label,
+        }
 
 
 NEXT_DATA_RE = re.compile(

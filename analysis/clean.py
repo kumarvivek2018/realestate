@@ -1,18 +1,24 @@
-"""Clean DLD raw CSVs into filtered Parquet tables for fast slicing.
+"""Clean DLD transactions CSV → filtered Parquet.
 
-The DLD transactions CSV is very large (millions of rows). We:
-  1. Stream-read with polars
-  2. Keep only apartments (drop villas/land/commercial)
-  3. Keep only sales (drop mortgages, gifts, etc.) for the transactions table
-  4. Keep only residential leases for the rent_contracts table
-  5. Save as Parquet, partitioned by year, in data/processed/
+Real DLD schema (downloaded via dubailand.gov.ae form):
+  TRANSACTION_NUMBER, INSTANCE_DATE, GROUP_EN, PROCEDURE_EN,
+  IS_OFFPLAN_EN, IS_FREE_HOLD_EN, USAGE_EN, AREA_EN,
+  PROP_TYPE_EN, PROP_SB_TYPE_EN, TRANS_VALUE, PROCEDURE_AREA,
+  ACTUAL_AREA, ROOMS_EN, PARKING, NEAREST_METRO_EN,
+  NEAREST_MALL_EN, NEAREST_LANDMARK_EN, TOTAL_BUYER, TOTAL_SELLER,
+  MASTER_PROJECT_EN, PROJECT_EN
+
+We:
+  - Keep only Sales (drop Mortgages, Gifts)
+  - Keep only Residential apartments (drop villas, land, commercial)
+  - Compute price_per_sqft from TRANS_VALUE / ACTUAL_AREA (DLD area is sqm)
+  - Title-case AREA_EN so it joins case-insensitively with PF data
+  - Map ROOMS_EN ("Studio", "1 B/R", "2 B/R", ...) to canonical
+    STUDIO / 1BR / 2BR / 3BR+ for downstream joins
+  - Save sales as data/processed/transactions.parquet
 
 Run:
     uv run python analysis/clean.py
-
-Schema names below are based on DLD's published open-data schema. If a
-column is missing or renamed in your downloaded CSV, the script logs the
-mismatch and you can update the COL_* mappings.
 """
 
 from __future__ import annotations
@@ -26,136 +32,92 @@ ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
 OUT = ROOT / "data" / "processed"
 
-# Logical column → likely DLD column names (we'll match the first one present)
-TX_COLS = {
-    "tx_date": ["instance_date", "transaction_date", "date"],
-    "tx_type": ["trans_group_en", "transaction_group", "transaction_type"],
-    "procedure": ["procedure_name_en", "procedure_en"],
-    "area_name": ["area_name_en", "area_en"],
-    "building_name": ["building_name_en", "tower_name_en"],
-    "project_name": ["project_name_en"],
-    "property_type": ["property_type_en", "property_sub_type_en"],
-    "rooms": ["rooms_en", "no_of_rooms", "rooms"],
-    "sqm": ["procedure_area", "area_sqm", "actual_area"],
-    "price_aed": ["actual_worth", "amount", "price"],
-    "price_per_sqm": ["meter_sale_price", "sale_price_per_sqm"],
-}
-
-RC_COLS = {
-    "start_date": ["contract_start_date", "start_date"],
-    "end_date": ["contract_end_date", "end_date"],
-    "registration_date": ["registration_date", "ejari_date"],
-    "area_name": ["area_name_en", "area_en"],
-    "building_name": ["building_name_en", "property_name_en"],
-    "project_name": ["project_name_en"],
-    "property_type": ["ejari_bus_property_type_en", "property_type_en"],
-    "property_subtype": ["ejari_property_sub_type_en", "property_sub_type_en"],
-    "rooms": ["no_of_rooms", "rooms"],
-    "annual_rent_aed": ["annual_amount", "contract_amount", "amount"],
-    "sqm": ["actual_area", "property_size"],
-}
+SQM_TO_SQFT = 10.7639
 
 
-def latest_csv(prefix: str) -> Path | None:
+def latest(prefix: str) -> Path | None:
     matches = sorted(RAW.glob(f"{prefix}_*.csv"))
     return matches[-1] if matches else None
 
 
-def resolve_columns(found: list[str], wanted: dict[str, list[str]]) -> dict[str, str | None]:
-    found_lower = {c.lower(): c for c in found}
-    out: dict[str, str | None] = {}
-    for logical, candidates in wanted.items():
-        out[logical] = next((found_lower[c.lower()] for c in candidates if c.lower() in found_lower), None)
-    return out
+def normalize_rooms(s: pl.Expr) -> pl.Expr:
+    s = s.cast(pl.Utf8).str.to_uppercase().str.strip_chars()
+    return (
+        pl.when(s.str.contains("STUDIO")).then(pl.lit("STUDIO"))
+        .when(s.str.contains(r"^1\s*B")).then(pl.lit("1BR"))
+        .when(s.str.contains(r"^2\s*B")).then(pl.lit("2BR"))
+        .when(s.str.contains(r"^[3-9]\s*B")).then(pl.lit("3BR+"))
+        .otherwise(pl.lit("OTHER"))
+    )
+
+
+def title_case_area(s: pl.Expr) -> pl.Expr:
+    """DLD has mixed case ('BUSINESS BAY' vs 'Al Garhoud'). Normalize to title case
+    for case-insensitive join with PF data."""
+    return s.cast(pl.Utf8).str.to_lowercase().str.replace_all(
+        r"\b(\w)", "${1}"
+    ).pipe(lambda c: c.str.to_titlecase() if hasattr(c.str, "to_titlecase") else c)
 
 
 def clean_transactions(path: Path) -> pl.DataFrame:
-    print(f"\n=== transactions: {path.name} ===")
-    schema = pl.scan_csv(path, infer_schema_length=10000).collect_schema().names()
-    cols = resolve_columns(schema, TX_COLS)
-    print("column mapping:")
-    for logical, actual in cols.items():
-        print(f"  {logical:<18} -> {actual}")
-    missing = [k for k, v in cols.items() if v is None]
-    if missing:
-        print(f"WARNING: missing columns: {missing}", file=sys.stderr)
-        print("Edit TX_COLS in analysis/clean.py to match your CSV schema.", file=sys.stderr)
+    print(f"loading {path.name}")
+    lf = pl.scan_csv(path, infer_schema_length=10000, ignore_errors=True)
 
-    select = [pl.col(actual).alias(logical) for logical, actual in cols.items() if actual]
-    lf = pl.scan_csv(path, infer_schema_length=10000, ignore_errors=True).select(select)
-
-    # Filter: apartments only, sales only
-    if "property_type" in [c.name for c in lf.collect_schema()]:
-        lf = lf.filter(pl.col("property_type").str.contains("(?i)apartment|flat|unit"))
-    if "tx_type" in [c.name for c in lf.collect_schema()]:
-        lf = lf.filter(pl.col("tx_type").str.contains("(?i)sale|sales"))
-
-    lf = lf.with_columns(
-        pl.col("tx_date").str.to_date(strict=False, format=None).alias("tx_date"),
-        (pl.col("price_aed").cast(pl.Float64) / pl.col("sqm").cast(pl.Float64) * 0.092903)
-        .alias("price_per_sqft"),
-    ).filter(
-        pl.col("price_aed").cast(pl.Float64).is_between(50_000, 50_000_000),
-        pl.col("sqm").cast(pl.Float64).is_between(15, 1500),
+    # Filter: Sales only, Residential, Flats only (apartments)
+    cleaned = (
+        lf
+        .filter(pl.col("GROUP_EN") == "Sales")
+        .filter(pl.col("USAGE_EN") == "Residential")
+        .filter(pl.col("PROP_SB_TYPE_EN").str.contains("(?i)flat|apartment|unit"))
+        .with_columns(
+            pl.col("INSTANCE_DATE").str.to_datetime(strict=False).alias("tx_datetime"),
+            pl.col("INSTANCE_DATE").str.to_datetime(strict=False).dt.date().alias("tx_date"),
+            normalize_rooms(pl.col("ROOMS_EN")).alias("config"),
+            pl.col("AREA_EN").str.to_lowercase().alias("area_lower"),
+            pl.col("TRANS_VALUE").cast(pl.Float64).alias("price_aed"),
+            pl.col("ACTUAL_AREA").cast(pl.Float64).alias("sqm"),
+            (pl.col("ACTUAL_AREA").cast(pl.Float64) * SQM_TO_SQFT).alias("sqft"),
+        )
+        .with_columns(
+            (pl.col("price_aed") / pl.col("sqft")).alias("price_per_sqft"),
+            (pl.col("IS_OFFPLAN_EN") == "Off-Plan").alias("is_offplan"),
+            (pl.col("IS_FREE_HOLD_EN") == "Free Hold").alias("is_freehold"),
+        )
+        .filter(
+            pl.col("price_aed").is_between(50_000, 50_000_000),
+            pl.col("sqft").is_between(150, 15_000),
+        )
+        .select(
+            "tx_date", "tx_datetime",
+            "AREA_EN", "area_lower",
+            "MASTER_PROJECT_EN", "PROJECT_EN",
+            "config", "ROOMS_EN",
+            "price_aed", "sqft", "sqm", "price_per_sqft",
+            "is_offplan", "is_freehold",
+            "NEAREST_METRO_EN", "NEAREST_MALL_EN", "NEAREST_LANDMARK_EN",
+            "TRANSACTION_NUMBER",
+        )
     )
 
-    df = lf.collect()
-    print(f"rows after clean: {len(df):,}")
-    return df
-
-
-def clean_rent_contracts(path: Path) -> pl.DataFrame:
-    print(f"\n=== rent_contracts: {path.name} ===")
-    schema = pl.scan_csv(path, infer_schema_length=10000).collect_schema().names()
-    cols = resolve_columns(schema, RC_COLS)
-    print("column mapping:")
-    for logical, actual in cols.items():
-        print(f"  {logical:<22} -> {actual}")
-    missing = [k for k, v in cols.items() if v is None]
-    if missing:
-        print(f"WARNING: missing columns: {missing}", file=sys.stderr)
-        print("Edit RC_COLS in analysis/clean.py to match your CSV schema.", file=sys.stderr)
-
-    select = [pl.col(actual).alias(logical) for logical, actual in cols.items() if actual]
-    lf = pl.scan_csv(path, infer_schema_length=10000, ignore_errors=True).select(select)
-
-    # Filter: residential apartments only
-    if "property_type" in [c.name for c in lf.collect_schema()]:
-        lf = lf.filter(pl.col("property_type").str.contains("(?i)residential|apartment|flat|unit"))
-
-    lf = lf.with_columns(
-        pl.col("start_date").str.to_date(strict=False, format=None).alias("start_date"),
-        pl.col("annual_rent_aed").cast(pl.Float64).alias("annual_rent_aed"),
-    ).filter(
-        pl.col("annual_rent_aed").is_between(10_000, 5_000_000),
-    )
-
-    df = lf.collect()
-    print(f"rows after clean: {len(df):,}")
+    df = cleaned.collect()
+    print(f"  → {len(df):,} sales (residential apartments) after filter")
+    print(f"  date range: {df['tx_date'].min()} to {df['tx_date'].max()}")
+    print(f"  config breakdown:")
+    bd = df.group_by("config").agg(pl.len().alias("n"), pl.col("price_aed").median().alias("median_price")).sort("n", descending=True)
+    print(bd)
     return df
 
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
-
-    tx_path = latest_csv("transactions")
-    if tx_path:
-        df = clean_transactions(tx_path)
-        out = OUT / "transactions.parquet"
-        df.write_parquet(out, compression="zstd")
-        print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
-    else:
-        print("no transactions CSV found in data/raw/", file=sys.stderr)
-
-    rc_path = latest_csv("rent_contracts")
-    if rc_path:
-        df = clean_rent_contracts(rc_path)
-        out = OUT / "rent_contracts.parquet"
-        df.write_parquet(out, compression="zstd")
-        print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
-    else:
-        print("no rent_contracts CSV found in data/raw/", file=sys.stderr)
-
+    tx_path = latest("transactions")
+    if not tx_path:
+        print("no transactions_*.csv in data/raw/", file=sys.stderr)
+        return 1
+    df = clean_transactions(tx_path)
+    out = OUT / "transactions.parquet"
+    df.write_parquet(out, compression="zstd")
+    print(f"\nwrote {out} ({out.stat().st_size / 1e6:.1f} MB, {len(df):,} rows)")
     return 0
 
 
